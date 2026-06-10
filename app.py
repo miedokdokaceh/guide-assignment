@@ -1,7 +1,7 @@
 import streamlit as st
 import matplotlib.pyplot as plt
 import pandas as pd
-from assignment import run_assignment, export_to_sheets
+from guide_assignment import run_assignment, export_to_sheets
 
 st.set_page_config(
     page_title="Guide Assignment System",
