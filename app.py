@@ -1,203 +1,184 @@
 import streamlit as st
-import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib
-matplotlib.use("Agg")
+import pandas as pd
+from assignment import run_assignment, export_to_sheets
 
-from assignment import run_assignment, export_to_sheets, B_CAPACITY
-
-st.set_page_config(page_title="Sistem Penugasan Pemandu", layout="wide")
-st.title("🗺️ Sistem Penugasan Pemandu — Jogja Good Guide")
-st.caption(
-    f"Model: *Generalized Assignment Problem* (GAP) | "
-    f"Algoritma: Greedy | Kapasitas b = {B_CAPACITY} per minggu"
+st.set_page_config(
+    page_title="Guide Assignment System",
+    page_icon="🗺️",
+    layout="wide",
 )
+st.title("🗺️ Guide Assignment System")
+st.caption("Sistem penugasan guide otomatis dari Google Sheets")
+st.divider()
 
-# =========================================================
-# TOMBOL GENERATE
-# =========================================================
-
-if st.button("▶️ Generate Assignment"):
-    with st.spinner("Membaca data dan menjalankan algoritma GAP..."):
+if st.button("▶ Generate Assignment", type="primary", use_container_width=True):
+    with st.spinner("Memuat data dari Google Sheets..."):
         try:
-            assignment_df, matrices_by_week = run_assignment()
-            st.session_state["assignment_df"]    = assignment_df
-            st.session_state["matrices_by_week"] = matrices_by_week
-            st.success("✅ Penugasan berhasil dihasilkan!")
+            assignment_df, gap_df_all, matrices_per_week = run_assignment()
+            st.session_state["assignment_df"]      = assignment_df
+            st.session_state["gap_df_all"]         = gap_df_all
+            st.session_state["matrices_per_week"]  = matrices_per_week
+            st.success(f"✅ Berhasil memproses **{len(assignment_df)}** jadwal.")
         except Exception as e:
-            st.error(f"❌ Error: {e}")
-            st.stop()
-
-# =========================================================
-# TAMPILKAN HASIL (jika sudah ada di session state)
-# =========================================================
+            st.error(f"❌ Error saat generate: {e}")
+            st.exception(e)
 
 if "assignment_df" in st.session_state:
-    assignment_df    = st.session_state["assignment_df"]
-    matrices_by_week = st.session_state["matrices_by_week"]
+    assignment_df     = st.session_state["assignment_df"]
+    gap_df_all        = st.session_state["gap_df_all"]
+    matrices_per_week = st.session_state["matrices_per_week"]
 
-    # ---- Statistik ringkasan ----
-    total_jadwal   = len(assignment_df)
-    berhasil       = (assignment_df["GUIDE_DITUGASKAN"] != "TIDAK ADA GUIDE").sum()
-    guide_terlibat = assignment_df[
+    # =========================================================
+    # HASIL PENUGASAN
+    # =========================================================
+    st.subheader("Hasil Penugasan")
+    st.dataframe(assignment_df, use_container_width=True)
+
+    # =========================================================
+    # STATISTIK RINGKAS
+    # =========================================================
+    st.subheader("Statistik")
+    total_jadwal = len(assignment_df)
+    tidak_ada    = (assignment_df["GUIDE_DITUGASKAN"] == "TIDAK ADA GUIDE").sum()
+    berhasil     = total_jadwal - tidak_ada
+    guide_unik   = assignment_df[
         assignment_df["GUIDE_DITUGASKAN"] != "TIDAK ADA GUIDE"
     ]["GUIDE_DITUGASKAN"].nunique()
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Jadwal",          total_jadwal)
-    col2.metric("Berhasil Ditugaskan",   berhasil)
-    col3.metric("Guide Terlibat",        guide_terlibat)
-
-    # ---- Tabel hasil penugasan ----
-    st.subheader("📋 Hasil Penugasan")
-    display_cols = ["WEEK", "JADWAL", "SHIFT", "GUIDE_DITUGASKAN",
-                    "RATING", "k_i", "BOBOT", "TOTAL_DITUGASKAN"]
-    st.dataframe(assignment_df[display_cols], use_container_width=True)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Jadwal", total_jadwal)
+    c2.metric("Berhasil Ditugaskan", berhasil)
+    c3.metric("Guide Terlibat", guide_unik)
 
     # =========================================================
-    # PANEL MATEMATIS PER MINGGU
+    # DISTRIBUSI PENUGASAN
     # =========================================================
-
-    st.subheader("📐 Model Matematis per Minggu")
-    st.markdown(
-        """
-        Sistem mengimplementasikan model **Generalized Assignment Problem (GAP)**:
-
-        **Fungsi Objektif:**  
-        $\\max \\displaystyle\\sum_i \\sum_j c_{ij} \\cdot x_{ij}$
-
-        **Fungsi Bobot:**  
-        $c_{ij} = w(p_i, j_j) = \\dfrac{r_{p_i}}{k_i + 1}$
-
-        **Kendala:**  
-        $\\sum_i x_{ij} = 1 \\;\\;\\forall j$ &nbsp;|&nbsp;
-        $\\sum_j x_{ij} \\leq b \\;\\;\\forall i$ &nbsp;|&nbsp;
-        $x_{ij} \\in \\{0,1\\}$
-        """
+    st.subheader("Distribusi Penugasan Guide")
+    guide_stats = (
+        assignment_df[
+            assignment_df["GUIDE_DITUGASKAN"] != "TIDAK ADA GUIDE"
+        ]["GUIDE_DITUGASKAN"].value_counts()
     )
-
-    week_options = sorted(matrices_by_week.keys())
-    selected_week = st.selectbox(
-        "Pilih minggu untuk melihat Matriks M (Ketersediaan) dan B (Solusi):",
-        week_options,
-        format_func=lambda w: f"Minggu ke-{w}",
-    )
-
-    wdata       = matrices_by_week[selected_week]
-    guide_names = wdata["guides"]
-    jadwal_list = wdata["jadwal"]
-    M_week      = wdata["M"]
-    B_df        = wdata["B"]
-    Z_week      = wdata["Z"]
-
-    tab_m, tab_b = st.tabs(["🔷 Matriks Ketersediaan M", "🔶 Matriks Solusi B"])
-
-    with tab_m:
-        st.markdown(
-            r"""
-            **Matriks Ketersediaan $M = [m_{ij}]$** — merepresentasikan Graf Bipartit
-            $K = (P,\, J,\, S)$ dengan $S = \{(p_i, j_j) \mid a_{ij} = 1\}$
-
-            $m_{ij} = 1$ → pemandu $p_i$ **tersedia** pada jadwal $j_j$ &nbsp;|&nbsp;
-            $m_{ij} = 0$ → **tidak tersedia**
-            """
-        )
-        # Tampilkan sebagai DataFrame dengan warna
-        M_df = pd.DataFrame(M_week, index=guide_names, columns=jadwal_list)
-        # Potong label kolom agar tidak terlalu panjang
-        M_df.columns = [c[:30] + "…" if len(c) > 30 else c for c in M_df.columns]
-        st.dataframe(
-            M_df.style.applymap(
-                lambda v: "background-color: #d4edda; color: #155724" if v == 1
-                else "background-color: #f8d7da; color: #721c24"
-            ),
-            use_container_width=True,
-        )
-
-    with tab_b:
-        st.markdown(
-            r"""
-            **Matriks Solusi $B = [b_{ij}]$** — merepresentasikan Graf Solusi
-            $Q = (P,\, J,\, T)$ dengan $T \subseteq S$, $T = \{(p_i, j_j) \mid x_{ij} = 1\}$
-
-            $b_{ij} = 1$ → pemandu $p_i$ **ditugaskan** pada jadwal $j_j$
-            """
-        )
-        B_display = B_df.copy()
-        B_display.columns = [
-            c[:30] + "…" if len(c) > 30 else c for c in B_display.columns
-        ]
-        st.dataframe(
-            B_display.style.applymap(
-                lambda v: "background-color: #cce5ff; color: #004085; font-weight: bold"
-                if v == 1 else ""
-            ),
-            use_container_width=True,
-        )
-
-        st.info(
-            f"**Nilai Fungsi Objektif Minggu ke-{selected_week}:**  "
-            f"$Z = \\sum_i \\sum_j c_{{ij}} \\cdot x_{{ij}} = {Z_week}$"
-        )
-
-    # =========================================================
-    # DIAGRAM DISTRIBUSI PENUGASAN
-    # =========================================================
-
-    st.subheader("📊 Distribusi Penugasan per Guide")
-
-    dist_df = (
-        assignment_df[assignment_df["GUIDE_DITUGASKAN"] != "TIDAK ADA GUIDE"]
-        .groupby("GUIDE_DITUGASKAN")
-        .size()
-        .reset_index(name="JUMLAH_TUGAS")
-        .sort_values("JUMLAH_TUGAS", ascending=False)
-    )
-
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.bar(dist_df["GUIDE_DITUGASKAN"], dist_df["JUMLAH_TUGAS"], color="#4A90D9")
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.bar(guide_stats.index, guide_stats.values, color="#4C72B0")
     ax.set_xlabel("Guide")
     ax.set_ylabel("Jumlah Penugasan")
-    ax.set_title("Distribusi Total Penugasan per Guide")
-    for bar, val in zip(ax.patches, dist_df["JUMLAH_TUGAS"]):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.1,
-                str(val), ha="center", va="bottom", fontsize=9)
+    ax.set_title("Distribusi Penugasan Guide")
+    plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
     st.pyplot(fig)
 
-    # Statistik distribusi
-    std_dev = dist_df["JUMLAH_TUGAS"].std(ddof=1)
-    cv      = (std_dev / dist_df["JUMLAH_TUGAS"].mean() * 100) if dist_df["JUMLAH_TUGAS"].mean() > 0 else 0
-    gap_val = dist_df["JUMLAH_TUGAS"].max() - dist_df["JUMLAH_TUGAS"].min()
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Standar Deviasi",   f"{std_dev:.2f}")
-    c2.metric("Koefisien Variasi", f"{cv:.1f}%")
-    c3.metric("Maks − Min",        int(gap_val))
-
-    # ---- Tabel ringkasan per guide ----
-    st.subheader("📌 Ringkasan per Guide")
-    summary = (
+    # =========================================================
+    # SUMMARY PER GUIDE
+    # =========================================================
+    st.subheader("Total Penugasan per Guide")
+    summary_df = (
         assignment_df[assignment_df["GUIDE_DITUGASKAN"] != "TIDAK ADA GUIDE"]
         .groupby("GUIDE_DITUGASKAN")
         .agg(
-            Total_Penugasan  = ("GUIDE_DITUGASKAN", "count"),
-            Rating           = ("RATING", "first"),
+            Total_Penugasan=("GUIDE_DITUGASKAN", "count"),
+            Rating=("RATING", "first"),
         )
         .reset_index()
         .rename(columns={"GUIDE_DITUGASKAN": "Guide"})
         .sort_values("Total_Penugasan", ascending=False)
+        .reset_index(drop=True)
     )
-    st.dataframe(summary, use_container_width=True)
+    summary_df.index += 1
+    st.dataframe(summary_df, use_container_width=True)
 
     # =========================================================
-    # EKSPOR
+    # GAP ANALYSIS
     # =========================================================
+    st.divider()
+    st.subheader("📊 GAP Analysis — Aktual vs Ideal per Minggu")
+    st.caption(
+        "GAP = Aktual − Ideal. Positif → guide mendapat lebih banyak dari rata-rata; "
+        "negatif → kurang dari rata-rata."
+    )
 
-    st.subheader("📤 Ekspor Hasil")
-    if st.button("📤 Tulis ke Sheet 'Penugasan'"):
-        with st.spinner("Mengekspor ke Google Sheets..."):
+    if not gap_df_all.empty:
+        weeks_available = sorted(gap_df_all["WEEK"].unique())
+        selected_week   = st.selectbox(
+            "Pilih minggu:", weeks_available,
+            format_func=lambda w: f"Minggu ke-{w}"
+        )
+        gap_week = gap_df_all[gap_df_all["WEEK"] == selected_week].copy()
+        gap_week = gap_week.sort_values("GAP", ascending=False).reset_index(drop=True)
+        gap_week.index += 1
+        st.dataframe(gap_week, use_container_width=True)
+
+        # Chart GAP
+        fig2, ax2 = plt.subplots(figsize=(10, 4))
+        colors = ["#e74c3c" if v > 0 else "#2ecc71" for v in gap_week["GAP"]]
+        ax2.bar(gap_week["Guide"], gap_week["GAP"], color=colors)
+        ax2.axhline(0, color="black", linewidth=0.8, linestyle="--")
+        ax2.set_xlabel("Guide")
+        ax2.set_ylabel("GAP (Aktual − Ideal)")
+        ax2.set_title(f"GAP Distribusi Penugasan — Minggu ke-{selected_week}")
+        plt.xticks(rotation=45, ha="right")
+        plt.tight_layout()
+        st.pyplot(fig2)
+    else:
+        st.info("Tidak ada data GAP yang dapat ditampilkan.")
+
+    # =========================================================
+    # MATRIKS DETAIL
+    # =========================================================
+    st.divider()
+    st.subheader("🔢 Matriks Detail per Minggu")
+    st.caption(
+        "**F** = Feasibility (1 = bisa, 0 = tidak bisa/penuh). "
+        "**W** = Bobot awal (rating/1, 0 jika infeasible). "
+        "**X** = Solusi assignment (1 = ditugaskan)."
+    )
+
+    if matrices_per_week:
+        week_keys = sorted(matrices_per_week.keys())
+        sel_week_mat = st.selectbox(
+            "Pilih minggu:", week_keys,
+            format_func=lambda w: f"Minggu ke-{w}",
+            key="mat_week_sel"
+        )
+        mat = matrices_per_week[sel_week_mat]
+        guide_names = mat["guide_names"]
+        jadwal_list = mat["jadwal_list"]
+
+        # Label kolom dipersingkat agar tabel tidak terlalu lebar
+        col_labels = [f"J{i+1}" for i in range(len(jadwal_list))]
+
+        tab_f, tab_w, tab_x = st.tabs(["Feasibility (F)", "Bobot Awal (W)", "Solusi (X)"])
+
+        with tab_f:
+            df_F = pd.DataFrame(mat["F"], index=guide_names, columns=col_labels)
+            st.dataframe(df_F, use_container_width=True)
+            st.caption("Keterangan kolom J1…Jn (urut tanggal):")
+            st.dataframe(
+                pd.DataFrame({"Kode": col_labels, "Jadwal": jadwal_list}),
+                use_container_width=True, hide_index=True
+            )
+
+        with tab_w:
+            df_W = pd.DataFrame(mat["W"], index=guide_names, columns=col_labels)
+            st.dataframe(df_W.style.format("{:.3f}"), use_container_width=True)
+
+        with tab_x:
+            df_X = pd.DataFrame(mat["X"], index=guide_names, columns=col_labels)
+            st.dataframe(df_X, use_container_width=True)
+            assigned_per_guide = df_X.sum(axis=1).rename("Total Ditugaskan (minggu ini)")
+            st.dataframe(assigned_per_guide, use_container_width=True)
+
+    # =========================================================
+    # EXPORT
+    # =========================================================
+    st.divider()
+    st.subheader("Export ke Google Sheets")
+    if st.button("📤 Tulis ke Sheet 'Penugasan'", use_container_width=True):
+        with st.spinner("Menulis ke Google Sheets..."):
             try:
                 export_to_sheets(assignment_df)
-                st.success("✅ Berhasil ditulis ke sheet 'Penugasan'!")
+                st.success("✅ Data berhasil ditulis ke Google Sheets!")
             except Exception as e:
-                st.error(f"❌ Gagal ekspor: {e}")
+                st.error(f"❌ Gagal export: {e}")
+                st.exception(e)
