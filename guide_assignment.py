@@ -100,12 +100,24 @@ def parse_unavailability_sheet(gc, spreadsheet_id):
         f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
         f"/gviz/tq?tqx=out:csv&sheet={encoded_sheet}"
     )
-    df = pd.read_csv(csv_url, header=16)
+
+    # Baca dulu tanpa header untuk mendeteksi baris yang mengandung "Guide"
+    raw = pd.read_csv(csv_url, header=None)
+    header_row = None
+    for i, row in raw.iterrows():
+        if row.astype(str).str.strip().str.upper().eq("GUIDE").any():
+            header_row = i
+            break
+
+    if header_row is None:
+        raise ValueError("Kolom 'Guide' tidak ditemukan di sheet CHECK UNAVAILABILITY MONTHLY")
+
+    df = pd.read_csv(csv_url, header=header_row)
 
     unavail = {}
     for _, row in df.iterrows():
         guide_name = normalize_name(row.get("Guide", ""))
-        if not guide_name:
+        if not guide_name or guide_name.upper() == "GUIDE":
             continue
         unavail[guide_name] = set()
         for col in df.columns:
@@ -117,7 +129,6 @@ def parse_unavailability_sheet(gc, spreadsheet_id):
                     for shift in SHIFT_MAP[cell_val]:
                         unavail[guide_name].add((day_num, shift))
     return unavail
-
 
 # =========================================================
 # 4. FUNGSI MEMBACA RATING PEMANDU
