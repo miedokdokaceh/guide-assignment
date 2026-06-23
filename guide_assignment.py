@@ -94,29 +94,77 @@ SHIFT_MAP = {
 # 3. FUNGSI MEMBACA DATA KETIDAKTERSEDIAAN PEMANDU
 # =========================================================
 
-def parse_unavailability_sheet(gc, spreadsheet_id):
-    encoded_sheet = quote("CHECK UNAVAILABILITY MONTHLY")
-    csv_url = (
-        f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
-        f"/gviz/tq?tqx=out:csv&sheet={encoded_sheet}"
+def parse_unavailability_sheet(gc, spreadsheet_id, sheet_name):
+    spreadsheet = gc.open_by_key(spreadsheet_id)
+    worksheet   = spreadsheet.worksheet(sheet_name)
+
+    all_values = worksheet.get(
+        "A1:ZZ",
+        value_render_option="FORMATTED_VALUE",
+        date_time_render_option="FORMATTED_STRING",
     )
 
-    # Baca dulu tanpa header untuk deteksi otomatis
-    raw = pd.read_csv(csv_url, header=None)
+    unavail = {}
 
-    # Cari baris yang mengandung kolom "Guide"
-    header_row = None
-    for i, row in raw.iterrows():
-        if row.astype(str).str.strip().str.lower().eq("guide").any():
-            header_row = i
-            break
+    header_row_indices = []
+    for i, row in enumerate(all_values):
+        for cell in row:
+            if str(cell).strip().lower() == "guide":
+                header_row_indices.append(i)
+                break
 
-    if header_row is None:
-        raise ValueError("Kolom 'Guide' tidak ditemukan di sheet unavailability.")
+    if not header_row_indices:
+        return unavail
 
-    df = pd.read_csv(csv_url, header=header_row)
-    ...
+    next_header = {header_row_indices[i]: header_row_indices[i + 1]
+                   for i in range(len(header_row_indices) - 1)}
 
+    for h_idx in header_row_indices:
+        header_row = all_values[h_idx]
+
+        guide_col_idx = None
+        for ci, cell in enumerate(header_row):
+            if str(cell).strip().lower() == "guide":
+                guide_col_idx = ci
+                break
+
+        if guide_col_idx is None:
+            continue
+
+        col_to_day = {}
+        for col_idx in range(guide_col_idx + 1, len(header_row)):
+            val = str(header_row[col_idx]).strip()
+            if re.match(r"^\d{1,2}$", val):
+                col_to_day[col_idx] = int(val)
+
+        block_end = next_header.get(h_idx, len(all_values))
+
+        for row_idx in range(h_idx + 1, block_end):
+            row = all_values[row_idx]
+
+            if len(row) <= guide_col_idx:
+                continue
+
+            guide_name = normalize_name(row[guide_col_idx])
+
+            if not guide_name:
+                continue
+
+            if guide_name.lower() == "guide":
+                break
+
+            if guide_name not in unavail:
+                unavail[guide_name] = set()
+
+            for col_idx, day_num in col_to_day.items():
+                if col_idx >= len(row):
+                    continue
+                cell_val = str(row[col_idx]).strip().upper()
+                if cell_val in SHIFT_MAP:
+                    for shift in SHIFT_MAP[cell_val]:
+                        unavail[guide_name].add((day_num, shift))
+
+    return unavail
 
 # =========================================================
 # 4. FUNGSI MEMBACA RATING PEMANDU
