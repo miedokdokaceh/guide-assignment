@@ -1,7 +1,11 @@
+flask
 streamlit
 pandas
 numpy
 matplotlib
 gspread
+gspread-dataframe
 google-auth
+google-auth-oauthlib
+google-auth-httplib2
 gspread-dataframe
