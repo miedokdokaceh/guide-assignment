@@ -100,7 +100,22 @@ def parse_unavailability_sheet(gc, spreadsheet_id):
         f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
         f"/gviz/tq?tqx=out:csv&sheet={encoded_sheet}"
     )
-    df = pd.read_csv(csv_url, header=16)
+
+    # Baca tanpa header dulu, lalu cari baris yang berisi kolom "Guide"
+    # secara otomatis. Ini menghindari ParserError saat jumlah baris
+    # di sheet berubah (mis. sheet kosong / belum sampai baris ke-17).
+    raw = pd.read_csv(csv_url, header=None)
+    header_row_idx = None
+    for idx, row in raw.iterrows():
+        if row.astype(str).str.strip().str.upper().eq("GUIDE").any():
+            header_row_idx = idx
+            break
+
+    if header_row_idx is None:
+        # Tidak ditemukan baris header "Guide" -> sheet kosong/format tidak sesuai
+        return {}
+
+    df = pd.read_csv(csv_url, header=header_row_idx)
 
     unavail = {}
     for _, row in df.iterrows():
