@@ -94,7 +94,7 @@ SHIFT_MAP = {
 # 3. FUNGSI MEMBACA DATA KETIDAKTERSEDIAAN PEMANDU
 # =========================================================
 
-def parse_unavailability_sheet(gc, spreadsheet_id, sheet_name):
+def parse_unavailability_sheet(gc, spreadsheet_id, "CHECK UNAVAILABILITY MONTHLY"):
     spreadsheet = gc.open_by_key(spreadsheet_id)
     worksheet   = spreadsheet.worksheet(sheet_name)
 
