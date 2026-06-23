@@ -5,10 +5,10 @@ from guide_assignment import run_assignment, export_to_sheets
 
 st.set_page_config(
     page_title="Guide Assignment System",
-    page_icon="🗺️",
+    page_icon="💡",
     layout="wide",
 )
-st.title("🗺️ Guide Assignment System")
+st.title("💡 Guide Assignment System")
 st.caption("Sistem penugasan guide otomatis dari Google Sheets")
 st.divider()
 
