@@ -1,359 +1,152 @@
-import pandas as pd
-import re
-import numpy as np
-from datetime import datetime
-from urllib.parse import quote
-import gspread
-from google.oauth2.service_account import Credentials
-from gspread_dataframe import set_with_dataframe
 import streamlit as st
+import matplotlib.pyplot as plt
+import pandas as pd
+from guide_assignment import run_assignment, export_to_sheets
 
+st.set_page_config(
+    page_title="Guide Assignment System",
+    page_icon="🗺️",
+    layout="wide",
+)
+st.title("🗺️ Guide Assignment System")
+st.caption("Sistem penugasan guide otomatis dari Google Sheets")
+st.divider()
 
-# =========================================================
-# 1. AUTH — Service Account
-# =========================================================
-
-def get_gspread_client():
-    scope = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    try:
-        creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"],
-            scopes=scope,
-        )
-    except Exception:
-        creds = Credentials.from_service_account_file(
-            "service_account.json",
-            scopes=scope,
-        )
-    return gspread.authorize(creds)
-
-
-# =========================================================
-# 2. FUNGSI & KAMUS PEMBANTU
-# =========================================================
-
-def normalize_name(name):
-    return str(name).strip()
-
-
-def extract_date(text):
-    match = re.search(r"(\d{1,2})\s+(\w+)\s+(\w+)\s+(\d{4})", str(text))
-    if match:
-        day_num    = match.group(1)
-        indo_month = match.group(3)
-        year       = match.group(4)
-        month_map = {
-            "Januari": "January",  "Februari": "February", "Maret": "March",
-            "April":   "April",    "Mei":       "May",      "Juni":  "June",
-            "Juli":    "July",     "Agustus":   "August",   "September": "September",
-            "Oktober": "October",  "November":  "November", "Desember": "December",
-        }
-        translated = month_map.get(indo_month, indo_month)
+if st.button("▶ Generate Assignment", type="primary", use_container_width=True):
+    with st.spinner("Memuat data dari Google Sheets..."):
         try:
-            return datetime.strptime(f"{day_num} {translated} {year}", "%d %B %Y")
-        except ValueError:
-            return None
-    return None
+            assignment_df, matrices_per_week = run_assignment()
+            st.session_state["assignment_df"]     = assignment_df
+            st.session_state["matrices_per_week"] = matrices_per_week
+            st.success(f"✅ Berhasil memproses **{len(assignment_df)}** jadwal.")
+        except Exception as e:
+            st.error(f"❌ Error saat generate: {e}")
+            st.exception(e)
 
+if "assignment_df" in st.session_state:
+    assignment_df     = st.session_state["assignment_df"]
+    matrices_per_week = st.session_state["matrices_per_week"]
 
-def extract_day_number(text):
-    match = re.match(r"(\d{1,2})\s", str(text).strip())
-    if match:
-        return int(match.group(1))
-    return None
+    # ---- Hasil Penugasan ----
+    st.subheader("Hasil Penugasan")
+    st.dataframe(assignment_df, use_container_width=True)
 
+    # ---- Statistik ----
+    st.subheader("Statistik")
+    total_jadwal = len(assignment_df)
+    tidak_ada    = (assignment_df["GUIDE_DITUGASKAN"] == "TIDAK ADA GUIDE").sum()
+    berhasil     = total_jadwal - tidak_ada
+    guide_unik   = assignment_df[
+        assignment_df["GUIDE_DITUGASKAN"] != "TIDAK ADA GUIDE"
+    ]["GUIDE_DITUGASKAN"].nunique()
 
-def extract_shift(text):
-    match = re.search(r"\((\d{1,2}):(\d{2})\)", str(text))
-    if match:
-        hour = int(match.group(1))
-        if 6 <= hour < 12:
-            return "PAGI"
-        elif 12 <= hour < 18:
-            return "SORE"
-        elif 18 <= hour <= 23:
-            return "MALAM"
-    return "UNKNOWN"
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Jadwal", total_jadwal)
+    c2.metric("Berhasil Ditugaskan", berhasil)
+    c3.metric("Guide Terlibat", guide_unik)
 
-
-SHIFT_MAP = {
-    "P":  ["PAGI"],
-    "S":  ["SORE"],
-    "M":  ["MALAM"],
-    "TS": ["PAGI", "SORE", "MALAM"],
-    "PM": ["PAGI", "MALAM"],
-    "SM": ["SORE", "MALAM"],
-    "PS": ["PAGI", "SORE"],
-}
-
-
-# =========================================================
-# 3. FUNGSI MEMBACA DATA KETIDAKTERSEDIAAN PEMANDU
-# =========================================================
-
-def parse_unavailability_sheet(gc, spreadsheet_id):
-    encoded_sheet = quote("CHECK UNAVAILABILITY MONTHLY")
-    csv_url = (
-        f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
-        f"/gviz/tq?tqx=out:csv&sheet={encoded_sheet}"
+    # ---- Distribusi ----
+    st.subheader("Distribusi Penugasan Guide")
+    guide_stats = (
+        assignment_df[
+            assignment_df["GUIDE_DITUGASKAN"] != "TIDAK ADA GUIDE"
+        ]["GUIDE_DITUGASKAN"].value_counts()
     )
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.bar(guide_stats.index, guide_stats.values, color="#4C72B0")
+    ax.set_xlabel("Guide")
+    ax.set_ylabel("Jumlah Penugasan")
+    ax.set_title("Distribusi Penugasan Guide")
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    st.pyplot(fig)
 
-    # Baca tanpa header dulu, lalu cari baris yang berisi kolom "Guide"
-    # secara otomatis. Ini menghindari ParserError saat jumlah baris
-    # di sheet berubah (mis. sheet kosong / belum sampai baris ke-17).
-    raw = pd.read_csv(csv_url, header=None)
-    header_row_idx = None
-    for idx, row in raw.iterrows():
-        if row.astype(str).str.strip().str.upper().eq("GUIDE").any():
-            header_row_idx = idx
-            break
-
-    if header_row_idx is None:
-        # Tidak ditemukan baris header "Guide" -> sheet kosong/format tidak sesuai
-        return {}
-
-    df = pd.read_csv(csv_url, header=header_row_idx)
-
-    unavail = {}
-    for _, row in df.iterrows():
-        guide_name = normalize_name(row.get("Guide", ""))
-        if not guide_name:
-            continue
-        unavail[guide_name] = set()
-        for col in df.columns:
-            cell_val = str(row[col]).strip().upper() if pd.notna(row[col]) else ""
-            if cell_val in SHIFT_MAP:
-                day_match = re.search(r"(\d{1,2})", str(col))
-                if day_match:
-                    day_num = int(day_match.group(1))
-                    for shift in SHIFT_MAP[cell_val]:
-                        unavail[guide_name].add((day_num, shift))
-    return unavail
-
-
-# =========================================================
-# 4. FUNGSI MEMBACA RATING PEMANDU
-# =========================================================
-
-def load_ratings(spreadsheet_id):
-    encoded_rating = quote("RATING GUIDE")
-    csv_url = (
-        f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
-        f"/gviz/tq?tqx=out:csv&sheet={encoded_rating}"
-    )
-    ratings_gs = pd.read_csv(csv_url, header=0)
-    rating_col = [c for c in ratings_gs.columns if "RATING" in c.upper()]
-    rating_col = rating_col[0] if rating_col else ratings_gs.columns[1]
-    ratings_gs = ratings_gs.rename(columns={"Guide": "Name", rating_col: "Rating"})
-    ratings_gs["Name"]   = ratings_gs["Name"].apply(normalize_name)
-    ratings_gs["Rating"] = pd.to_numeric(ratings_gs["Rating"], errors="coerce").fillna(3.0)
-    return ratings_gs[["Name", "Rating"]]
-
-
-# =========================================================
-# 5. FUNGSI PEMBENTUKAN MATRIKS
-# =========================================================
-
-def build_matrices(dashboard_week, guide_dict):
-    guide_names = sorted(guide_dict.keys())
-    n_g = len(guide_names)
-    n_j = len(dashboard_week)
-
-    F = np.zeros((n_g, n_j), dtype=int)    # Matriks Ketersediaan
-    W = np.zeros((n_g, n_j), dtype=float)  # Matriks Pembobotan awal (k=0)
-    X = np.zeros((n_g, n_j), dtype=int)    # Matriks Solusi
-
-    for j_idx, row in enumerate(dashboard_week.itertuples()):
-        day_num = int(row.DAY_NUM)
-        shift   = row.SHIFT
-        for g_idx, gname in enumerate(guide_names):
-            info = guide_dict[gname]
-            if (day_num, shift) not in info["unavailable"]:
-                F[g_idx, j_idx] = 1
-                W[g_idx, j_idx] = round(info["rating"] / 1, 3)  # bobot awal k=0
-
-    return F, W, X, guide_names
-
-
-# =========================================================
-# 6. FUNGSI PENGISIAN MATRIKS SOLUSI
-# =========================================================
-
-def fill_solution_matrix(X, guide_names, assignment_output):
-    for j_idx, record in enumerate(assignment_output):
-        chosen_guide = record.get("GUIDE_DITUGASKAN", "")
-        if chosen_guide in guide_names:
-            g_idx = guide_names.index(chosen_guide)
-            X[g_idx, j_idx] = 1
-    return X
-
-
-# =========================================================
-# 7. FUNGSI UTAMA — RUN ASSIGNMENT
-# =========================================================
-
-def run_assignment():
-    SPREADSHEET_ID       = "1oYpIm7qRNS69oWxgWPVPx1eOywvOsanr2VLaH7_pnSY"
-    GS_UNAVAILABILITY_ID = "1jS8KUIYfCHAHafgibzr74GwCEBQvaObHSgoCqRiyGCA"
-    GS_RATING_ID         = "1jS8KUIYfCHAHafgibzr74GwCEBQvaObHSgoCqRiyGCA"
-
-    # ---- Load Dashboard ----
-    csv_url = (
-        f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}"
-        f"/gviz/tq?tqx=out:csv&sheet=DASHBOARD"
-    )
-    dashboard = pd.read_csv(csv_url, header=1)
-    dashboard = dashboard[dashboard["SUDAH DIKIRIM"].notna()].copy()
-    dashboard = dashboard[
-        dashboard["SUDAH DIKIRIM"].astype(str).str.strip() != ""
-    ]
-    dashboard["DATE"]    = dashboard["TANGGAL & RUTE"].apply(extract_date)
-    dashboard            = dashboard[dashboard["DATE"].notna()].copy()
-    dashboard["DAY_NUM"] = dashboard["TANGGAL & RUTE"].apply(extract_day_number)
-    dashboard["SHIFT"]   = dashboard["TANGGAL & RUTE"].apply(extract_shift)
-    dashboard["WEEK"]    = dashboard["DATE"].dt.isocalendar().week
-    dashboard            = dashboard.sort_values(by="DATE").reset_index(drop=True)
-
-    # ---- Load Unavailability & Rating ----
-    gc      = get_gspread_client()
-    unavail = parse_unavailability_sheet(gc, GS_UNAVAILABILITY_ID)
-    ratings = load_ratings(GS_RATING_ID)
-
-    # ---- Bangun guide_dict ----
-    guide_dict = {}
-    for _, row in ratings.iterrows():
-        gname = normalize_name(row["Name"])
-        guide_dict[gname] = {
-            "rating":         float(row["Rating"]),
-            "unavailable":    unavail.get(gname, set()),
-            "assigned_count": 0,
-        }
-
-    # ---- Proses penugasan per pekan ----
-    all_results        = []
-    matrices_per_week  = {}
-    weeks              = sorted(dashboard["WEEK"].dropna().unique())
-
-    for current_week in weeks:
-        dashboard_week = (
-            dashboard[dashboard["WEEK"] == current_week]
-            .copy()
-            .sort_values(by="DATE")
-            .reset_index(drop=True)
+    # ---- Summary per Guide ----
+    st.subheader("Total Penugasan per Guide")
+    summary_df = (
+        assignment_df[assignment_df["GUIDE_DITUGASKAN"] != "TIDAK ADA GUIDE"]
+        .groupby("GUIDE_DITUGASKAN")
+        .agg(
+            Total_Penugasan=("GUIDE_DITUGASKAN", "count"),
+            Rating=("RATING", "first"),
         )
-
-        for g in guide_dict:
-            guide_dict[g]["assigned_count"] = 0
-
-        F, W_awal, X, guide_names = build_matrices(dashboard_week, guide_dict)
-        W_akhir = np.zeros_like(W_awal)
-        jadwal_list = dashboard_week["TANGGAL & RUTE"].tolist()
-
-        assignment_output = []
-
-        for j_idx, row in enumerate(dashboard_week.itertuples()):
-            jadwal  = row._asdict()["TANGGAL & RUTE"]
-            day_num = int(row.DAY_NUM)
-            shift   = row.SHIFT
-
-            feasible = []
-            for g_idx, gname in enumerate(guide_names):
-                info       = guide_dict[gname]
-                is_unavail = (day_num, shift) in info["unavailable"]
-                if not is_unavail:
-                    k      = info["assigned_count"]
-                    rating = info["rating"]
-                    weight = rating / (k + 1)
-                    W_akhir[g_idx, j_idx] = round(weight, 3)
-                    feasible.append({
-                        "guide":  gname,
-                        "g_idx":  g_idx,
-                        "rating": rating,
-                        "weight": weight,
-                        "k":      k,
-                    })
-
-            if not feasible:
-                assignment_output.append({
-                    "WEEK":             str(current_week),
-                    "JADWAL":           jadwal,
-                    "SHIFT":            shift,
-                    "GUIDE_DITUGASKAN": "TIDAK ADA GUIDE",
-                    "RATING":           "",
-                    "k_i":              "",
-                    "BOBOT":            "",
-                    "TOTAL_DITUGASKAN": "0",
-                })
-                continue
-
-            chosen = max(feasible, key=lambda x: x["weight"])
-            guide_dict[chosen["guide"]]["assigned_count"] += 1
-            total = str(guide_dict[chosen["guide"]]["assigned_count"])
-
-            assignment_output.append({
-                "WEEK":             str(current_week),
-                "JADWAL":           jadwal,
-                "SHIFT":            shift,
-                "GUIDE_DITUGASKAN": chosen["guide"],
-                "RATING":           chosen["rating"],
-                "k_i":              chosen["k"],
-                "BOBOT":            round(chosen["weight"], 3),
-                "TOTAL_DITUGASKAN": total,
-            })
-
-        X = fill_solution_matrix(X, guide_names, assignment_output)
-        all_results.append(pd.DataFrame(assignment_output))
-
-        matrices_per_week[current_week] = {
-            "F":           F,
-            "W_awal":      W_awal,
-            "W_akhir":     W_akhir,
-            "X":           X,
-            "guide_names": guide_names,
-            "jadwal_list": jadwal_list,
-        }
-
-    # ---- Gabung & Sort ----
-    assignment_df = pd.concat(all_results, ignore_index=True)
-    assignment_df = assignment_df.merge(
-        dashboard[["TANGGAL & RUTE", "DATE"]],
-        left_on="JADWAL",
-        right_on="TANGGAL & RUTE",
-        how="left",
-    )
-    assignment_df = (
-        assignment_df
-        .sort_values(by="DATE")
+        .reset_index()
+        .rename(columns={"GUIDE_DITUGASKAN": "Guide"})
+        .sort_values("Total_Penugasan", ascending=False)
         .reset_index(drop=True)
-        .drop(columns=["TANGGAL & RUTE"])
     )
-    return assignment_df, matrices_per_week
+    summary_df.index += 1
+    st.dataframe(summary_df, use_container_width=True)
 
+    # ---- Matriks ----
+    st.divider()
+    st.subheader("🔢 Matriks per Minggu")
+    st.caption(
+        "**F** = Feasibility (1 = bisa, 0 = tidak). "
+        "**W awal** = Bobot sebelum assignment dimulai. "
+        "**W akhir** = Bobot setelah semua jadwal diproses (turun tiap guide dipilih). "
+        "**X** = Solusi (1 = ditugaskan)."
+    )
 
-# =========================================================
-# 8. FUNGSI EKSPOR KE GOOGLE SHEETS
-# =========================================================
-
-def export_to_sheets(assignment_df):
-    gc                    = get_gspread_client()
-    SPREADSHEET_ID_EXPORT = "1oYpIm7qRNS69oWxgWPVPx1eOywvOsanr2VLaH7_pnSY"
-    sheet_name_export     = "Penugasan"
-
-    spreadsheet = gc.open_by_key(SPREADSHEET_ID_EXPORT)
-    try:
-        worksheet = spreadsheet.worksheet(sheet_name_export)
-    except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(
-            title=sheet_name_export, rows=5000, cols=20
+    if matrices_per_week:
+        week_keys    = sorted(matrices_per_week.keys())
+        sel_week_mat = st.selectbox(
+            "Pilih minggu:", week_keys,
+            format_func=lambda w: f"Minggu ke-{w}",
         )
-    worksheet.clear()
-    set_with_dataframe(
-        worksheet=worksheet,
-        dataframe=assignment_df,
-        include_index=False,
-        include_column_header=True,
-        resize=True,
-    )
+        mat         = matrices_per_week[sel_week_mat]
+        guide_names = mat["guide_names"]
+        jadwal_list = mat["jadwal_list"]
+        col_labels  = [f"J{i+1}" for i in range(len(jadwal_list))]
+
+        tab_f, tab_wa, tab_wz, tab_x = st.tabs([
+            "Feasibility (F)", "Bobot Awal (W)", "Bobot Akhir (W')", "Solusi (X)"
+        ])
+
+        with tab_f:
+            st.dataframe(
+                pd.DataFrame(mat["F"], index=guide_names, columns=col_labels),
+                use_container_width=True,
+            )
+
+        with tab_wa:
+            st.dataframe(
+                pd.DataFrame(mat["W_awal"], index=guide_names, columns=col_labels)
+                .style.format("{:.3f}"),
+                use_container_width=True,
+            )
+
+        with tab_wz:
+            st.caption("Bobot 0 = infeasible atau sudah mencapai batas penugasan minggu ini.")
+            st.dataframe(
+                pd.DataFrame(mat["W_akhir"], index=guide_names, columns=col_labels)
+                .style.format("{:.3f}"),
+                use_container_width=True,
+            )
+
+        with tab_x:
+            df_X = pd.DataFrame(mat["X"], index=guide_names, columns=col_labels)
+            st.dataframe(df_X, use_container_width=True)
+            st.dataframe(
+                df_X.sum(axis=1).rename("Total Ditugaskan (minggu ini)"),
+                use_container_width=True,
+            )
+
+        #  ---- HISTORY JADWAL ----
+        with st.expander("Keterangan kode kolom J1…Jn"):
+            st.dataframe(
+                pd.DataFrame({"Kode": col_labels, "Jadwal": jadwal_list}),
+                use_container_width=True, hide_index=True,
+            )
+
+    # ---- Export ----
+    st.divider()
+    st.subheader("Export ke Google Sheets")
+    if st.button("📤 Tulis ke Sheet 'Penugasan'", use_container_width=True):
+        with st.spinner("Menulis ke Google Sheets..."):
+            try:
+                export_to_sheets(assignment_df)
+                st.success("✅ Data berhasil ditulis ke Google Sheets!")
+            except Exception as e:
+                st.error(f"❌ Gagal export: {e}")
+                st.exception(e)
