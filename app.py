@@ -15,8 +15,9 @@ st.divider()
 if st.button("▶ Generate Assignment", type="primary", use_container_width=True):
     with st.spinner("Memuat data dari Google Sheets..."):
         try:
-            assignment_df = run_assignment()
-            st.session_state["assignment_df"] = assignment_df
+            assignment_df, matrices_per_week = run_assignment()
+            st.session_state["assignment_df"]     = assignment_df
+            st.session_state["matrices_per_week"] = matrices_per_week
             st.success(f"✅ Berhasil memproses **{len(assignment_df)}** jadwal.")
         except Exception as e:
             st.error(f"❌ Error saat generate: {e}")
